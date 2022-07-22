@@ -210,6 +210,7 @@ class Trainer(object):
 
 			# Get labels ranging from 0 to n_classes for n rows
 			labels = Variable(torch.randint(0, self.settings.nClasses, (self.settings.batchSize,))).cuda()
+			# https://titania7777.tistory.com/3
 			z = z.contiguous()
 			labels = labels.contiguous()
 			images = self.generator(z, labels)

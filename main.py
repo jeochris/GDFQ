@@ -27,6 +27,9 @@ class Generator(nn.Module):
 	def __init__(self, options=None, conf_path=None):
 		super(Generator, self).__init__()
 		self.settings = options or Option(conf_path)
+		# Class label 들어오면 해당하는 latent vector를 lookup table에서 선택하는 것이 embedding vector로 변환하는것
+		# 이러한 embedding 또한 학습됨
+		# https://wikidocs.net/64779
 		self.label_emb = nn.Embedding(self.settings.nClasses, self.settings.latent_dim)
 		self.init_size = self.settings.img_size // 4
 		self.l1 = nn.Sequential(nn.Linear(self.settings.latent_dim, 128 * self.init_size ** 2))
@@ -50,14 +53,17 @@ class Generator(nn.Module):
 		)
 
 	def forward(self, z, labels):
+		# input for generator = z & label's embedding -> element-wise multiplied
 		gen_input = torch.mul(self.label_emb(labels), z)
 		out = self.l1(gen_input)
 		out = out.view(out.shape[0], 128, self.init_size, self.init_size)
 		img = self.conv_blocks0(out)
+		# interpolate로 다시 이미지 사이즈 늘리기
 		img = nn.functional.interpolate(img, scale_factor=2)
 		img = self.conv_blocks1(img)
 		img = nn.functional.interpolate(img, scale_factor=2)
 		img = self.conv_blocks2(img)
+		# fake image generated based on given label & noise vector
 		return img
 
 
@@ -70,6 +76,9 @@ class Generator_imagenet(nn.Module):
 		self.init_size = self.settings.img_size // 4
 		self.l1 = nn.Sequential(nn.Linear(self.settings.latent_dim, 128 * self.init_size ** 2))
 
+		# 기존에는 그냥 BNS 다같이씀
+		# CategoricalConditionalBatchNorm2d : label마다 BNS를 따로 뽑아내기
+		# imagenet처럼 복잡한 label일때 매우 유용
 		self.conv_blocks0_0 = CategoricalConditionalBatchNorm2d(1000, 128)
 
 		self.conv_blocks1_0 = nn.Conv2d(128, 128, 3, stride=1, padding=1)
@@ -104,6 +113,7 @@ class Generator_imagenet(nn.Module):
 class ExperimentDesign:
 	def __init__(self, generator=None, options=None, conf_path=None):
 		self.settings = options or Option(conf_path)
+		# generator 가져옴
 		self.generator = generator
 		self.train_loader = None
 		self.test_loader = None
@@ -124,6 +134,7 @@ class ExperimentDesign:
 		self.logger = self.set_logger()
 		self.settings.paramscheck(self.logger)
 
+		# prepare for experiment
 		self.prepare()
 	
 	def set_logger(self):
@@ -146,9 +157,9 @@ class ExperimentDesign:
 
 	def prepare(self):
 		self._set_gpu()
-		self._set_dataloader()
-		self._set_model()
-		self._replace()
+		self._set_dataloader() # dataloader 생성 - datalodaer.py
+		self._set_model() # teacher, student model 초기상태 설정
+		self._replace() # = replace student model with quantized version of model
 		self.logger.info(self.model)
 		self._set_trainer()
 	
@@ -167,14 +178,17 @@ class ExperimentDesign:
 		                         ten_crop=self.settings.tenCrop,
 		                         logger=self.logger)
 		
+		# 우리는 training set이 없으므로 train_loader는 안쓰임
 		self.train_loader, self.test_loader = data_loader.getloader()
 
 	def _set_model(self):
 		if self.settings.dataset in ["cifar100"]:
 			self.test_input = Variable(torch.randn(1, 3, 32, 32).cuda())
-			self.model = ptcv_get_model('resnet20_cifar100', pretrained=True)
-			self.model_teacher = ptcv_get_model('resnet20_cifar100', pretrained=True)
-			self.model_teacher.eval()
+			# model retreived from pytorchcv
+			# 여기서는 기존 resnet20_cifar100 모델 그대로 가져오고 쓰는 상황
+			self.model = ptcv_get_model('resnet20_cifar100', pretrained=True) # model to be quantized (student model)
+			self.model_teacher = ptcv_get_model('resnet20_cifar100', pretrained=True) # full-precision model (teacher model)
+			self.model_teacher.eval() # eval mode = dropout, BN 같은거 따로 계산 없이 쓰는 모드!
 
 		elif self.settings.dataset in ["imagenet"]:
 			self.test_input = Variable(torch.randn(1, 3, 224, 224).cuda())
@@ -227,11 +241,15 @@ class ExperimentDesign:
 		Recursively quantize a pretrained single-precision model to int8 quantized model
 		model: pretrained single-precision model
 		"""
+
+		# recursive하게 만들어 모든 layer를 하나하나 quantize!
 		
+		# quantization bit setting
 		weight_bit = self.settings.qw
 		act_bit = self.settings.qa
 		
 		# quantize convolutional and linear layers
+		# quant_modules.py 참고 - code referenced from ZeroQ
 		if type(model) == nn.Conv2d:
 			quant_mod = Quant_Conv2d(weight_bit=weight_bit)
 			quant_mod.set_param(model)
@@ -348,16 +366,19 @@ class ExperimentDesign:
 
 def main():
 	parser = argparse.ArgumentParser(description='Baseline')
+	# conf_path : hocon file
 	parser.add_argument('--conf_path', type=str, metavar='conf_path',
 	                    help='input the path of config file')
 	parser.add_argument('--id', type=int, metavar='experiment_id',
 	                    help='Experiment ID')
 	args = parser.parse_args()
 	
+	# option -> all hyperparameter
 	option = Option(args.conf_path)
 	option.manualSeed = args.id + 1
 	option.experimentID = option.experimentID + "{:0>2d}_repeat".format(args.id)
 
+	# Generator init
 	if option.dataset in ["cifar100"]:
 		generator = Generator(option)
 	elif option.dataset in ["imagenet"]:
@@ -365,6 +386,7 @@ def main():
 	else:
 		assert False, "invalid data set"
 
+	# experiment design init
 	experiment = ExperimentDesign(generator, option)
 	experiment.run()
 
