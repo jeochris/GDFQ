@@ -84,6 +84,7 @@ class QuantAct(Module):
 			# self.x_min += -self.x_min + min(self.x_min, x_min)
 			# self.x_max += -self.x_max + max(self.x_max, x_max)
 
+			# EMA 방식으로 min, max update
 			self.beta_t = self.beta_t * self.beta
 			self.x_min = (self.x_min * self.beta + x_min * (1 - self.beta))/(1 - self.beta_t)
 			self.x_max = (self.x_max * self.beta + x_max * (1 - self.beta)) / (1 - self.beta_t)

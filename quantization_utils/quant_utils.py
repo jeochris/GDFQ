@@ -128,6 +128,7 @@ class AsymmetricQuantFunction(Function):
         new_quant_x = linear_quantize(x, scale, zero_point, inplace=False)
         n = 2**(k - 1)
         new_quant_x = torch.clamp(new_quant_x, -n, n - 1)
+        # fake quantization
         quant_x = linear_dequantize(new_quant_x,
                                     scale,
                                     zero_point,
@@ -136,4 +137,5 @@ class AsymmetricQuantFunction(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        # STE (straight through estimator) 활용
         return grad_output, None, None, None

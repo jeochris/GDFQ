@@ -244,12 +244,13 @@ class ExperimentDesign:
 
 		# recursive하게 만들어 모든 layer를 하나하나 quantize!
 		
-		# quantization bit setting
+		# target quantization bit setting
 		weight_bit = self.settings.qw
 		act_bit = self.settings.qa
 		
 		# quantize convolutional and linear layers
 		# quant_modules.py 참고 - code referenced from ZeroQ
+		# 1. conv, linear를 대체하는 quant_mod를 만들어서 리턴
 		if type(model) == nn.Conv2d:
 			quant_mod = Quant_Conv2d(weight_bit=weight_bit)
 			quant_mod.set_param(model)
@@ -261,15 +262,18 @@ class ExperimentDesign:
 		
 		# quantize all the activation
 		elif type(model) == nn.ReLU or type(model) == nn.ReLU6:
+			# 2. conv, linear와는 다르게 relu 뒤에 Quant하는 노드를 추가해서 리턴
 			return nn.Sequential(*[model, QuantAct(activation_bit=act_bit)])
 		
 		# recursively use the quantized module to replace the single-precision module
+		# 바뀐 Sequential 내부 내용을 반영해 리턴
 		elif type(model) == nn.Sequential:
 			mods = []
 			for n, m in model.named_children():
 				mods.append(self.quantize_model(m))
 			return nn.Sequential(*mods)
 		else:
+			# model deepcopy한 q_model을 사용
 			q_model = copy.deepcopy(model)
 			for attr in dir(model):
 				mod = getattr(model, attr)
@@ -317,6 +321,7 @@ class ExperimentDesign:
 		best_top5 = 100
 		start_time = time.time()
 
+		# teacher model 성능 먼저 파악
 		test_error, test_loss, test5_error = self.trainer.test_teacher(0)
 
 		try:
@@ -324,12 +329,14 @@ class ExperimentDesign:
 				self.epoch = epoch
 				self.start_epoch = 0
 
+				# 초반 4 epoch은 activ quant node를 unfreeze해 range, zero_point update하면서 train
 				if epoch < 4:
 					print ("\n self.unfreeze_model(self.model)\n")
 					self.unfreeze_model(self.model)
 
 				train_error, train_loss, train5_error = self.trainer.train(epoch=epoch)
 
+				# activ quant freeze 
 				self.freeze_model(self.model)
 
 				if self.settings.dataset in ["cifar100"]:

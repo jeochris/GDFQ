@@ -122,6 +122,7 @@ class Trainer(object):
 		c = (alpha * T * T)
 		d = criterion_d(output, labels)
 
+		# KD loss + CE loss
 		KD_loss = kdloss(a,b)*c + d
 		return KD_loss
 	
@@ -139,7 +140,7 @@ class Trainer(object):
 	
 	def backward_G(self, loss_G):
 		"""
-		backward propagation
+		backward propagation of generator
 		"""
 		self.optimizer_G.zero_grad()
 		loss_G.backward()
@@ -147,7 +148,7 @@ class Trainer(object):
 
 	def backward_S(self, loss_S):
 		"""
-		backward propagation
+		backward propagation of student model
 		"""
 		self.optimizer_S.zero_grad()
 		loss_S.backward()
@@ -169,8 +170,10 @@ class Trainer(object):
 		# use biased var in train
 		var = input.var([0, 2, 3], unbiased=False)
 
+		# fake image batch마다 mean, var 값들 저장
 		self.mean_list.append(mean)
 		self.var_list.append(var)
+		# 축적되는 mean, var 값 저장
 		self.teacher_running_mean.append(module.running_mean)
 		self.teacher_running_var.append(module.running_var)
 
@@ -190,13 +193,15 @@ class Trainer(object):
 		iters = 200
 		self.update_lr(epoch)
 
-		self.model.eval()
+		self.model.eval() # 확인
 		self.model_teacher.eval()
 		self.generator.train()
 		
 		start_time = time.time()
 		end_time = start_time
 		
+		# 맨처음에 한번 batchnorm에 hook 걸어놓기
+		# 모델이 실행될때 BN layer마다 해당 hook 실행해서 mean, var 값 계산해서 저장
 		if epoch==0:
 			for m in self.model_teacher.modules():
 				if isinstance(m, nn.BatchNorm2d):
@@ -206,6 +211,7 @@ class Trainer(object):
 			start_time = time.time()
 			data_time = start_time - end_time
 
+			# random z 생성
 			z = Variable(torch.randn(self.settings.batchSize, self.settings.latent_dim)).cuda()
 
 			# Get labels ranging from 0 to n_classes for n rows
@@ -213,10 +219,13 @@ class Trainer(object):
 			# https://titania7777.tistory.com/3
 			z = z.contiguous()
 			labels = labels.contiguous()
+			# generator 넣고 image 추출
 			images = self.generator(z, labels)
 		
+			# 이전 BN mean, var 값 비우기
 			self.mean_list.clear()
 			self.var_list.clear()
+			# teacher model에 만든 fake image 돌리면서 해당 batch의 BN mean var 값도 다시 채움
 			output_teacher_batch, output_teacher_1 = self.model_teacher(images, out_feature = True)
 
 			# One hot loss
@@ -226,6 +235,7 @@ class Trainer(object):
 			BNS_loss = torch.zeros(1).cuda()
 
 			for num in range(len(self.mean_list)):
+				# teacher_running_mean : teacher 모델의 고정된 ?
 				BNS_loss += self.MSE_loss(self.mean_list[num], self.teacher_running_mean[num]) + self.MSE_loss(
 					self.var_list[num], self.teacher_running_var[num])
 
@@ -234,10 +244,14 @@ class Trainer(object):
 			# loss of Generator
 			loss_G = loss_one_hot + 0.1 * BNS_loss
 
+			# Generator Backprop
 			self.backward_G(loss_G)
 
+			# 이제 student model 돌리고 output, loss 뽑아내기
 			output, loss_S = self.forward(images.detach(), output_teacher_batch.detach(), labels)
 			
+			# 초반에는 student model update 안하고, generator만 update
+			# 초반에 model도 같이 update하면, 들어오는 fake image가 너무 부정확해 모델 이상해질 가능성
 			if epoch>= self.settings.warmup_epochs:
 				self.backward_S(loss_S)
 
