@@ -173,7 +173,8 @@ class Trainer(object):
 		# fake image batch마다 mean, var 값들 저장
 		self.mean_list.append(mean)
 		self.var_list.append(var)
-		# 축적되는 mean, var 값 저장
+		# teacher model의 원래 BNS값 저장 (fixed BNS)
+		# eval mode 이기에 running_mean, running_var 써도 업데이트 없이 고정된 값 사용?
 		self.teacher_running_mean.append(module.running_mean)
 		self.teacher_running_var.append(module.running_var)
 
@@ -193,7 +194,7 @@ class Trainer(object):
 		iters = 200
 		self.update_lr(epoch)
 
-		self.model.eval() # 확인
+		self.model.eval() # replace되기 전 기존 BNS 값이 유지됨 -> Fixed BNS -> 뒤에 forward에서 이러한 Fixed BNS 값 사용
 		self.model_teacher.eval()
 		self.generator.train()
 		
@@ -246,6 +247,8 @@ class Trainer(object):
 
 			# Generator Backprop
 			self.backward_G(loss_G)
+
+			# 여기까지 teacher model 활용해 generator train 과정
 
 			# 이제 student model 돌리고 output, loss 뽑아내기
 			output, loss_S = self.forward(images.detach(), output_teacher_batch.detach(), labels)
